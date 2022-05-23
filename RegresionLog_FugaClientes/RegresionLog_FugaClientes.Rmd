@@ -1,0 +1,445 @@
+---
+title: "RegresionLogistica_FugaClientes"
+author: "Laura Piñeros"
+date: "Febrero_2022"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Aplicación del modelo 
+
+
+En primer lugar se fija el directorio de trabajo donde tenemos las funciones y los datos.
+
+```{r directorio y funciones, echo=FALSE, warning=F}
+#Ruta de Funciones 
+getwd()
+setwd('C:/Users/Laura/Dropbox/UCM/Mineria_y_modelizacion_1/Tarea')
+
+#cargamos las funciones
+source('Funciones_R.R')
+```
+
+```{r paquetes, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# Utilizamos la función paquetes
+# para instalar/cargar las librerías
+paquetes(c('questionr','psych','car','corrplot','caret', 
+           'ggplot2', 'lmSupport','pROC','gridExtra', 'glmnet'))
+
+```
+
+Procedemos a la lectura de los datos depurados.
+
+
+```{r lectura datos}
+# Parto de los datos sin atípicos ni ausentes guardados
+datos<-readRDS("C:/Users/Laura/Dropbox/UCM/Mineria_y_modelizacion_1/Tarea/datosFugaClientes.RDS")
+#names(datos)
+varObjBin<-datos$varObjBin
+input<-datos[,-(1)]
+
+```
+
+Variables control:
+
+```{r variables de control}
+# Creo la variable aleatoria
+input$aleatorio<-runif(nrow(input))
+input$aleatorio2<-runif(nrow(input))
+str(input)
+```
+
+
+## Estudio descriptivo de relaciones con la respuesta
+
+En este apartado intentaremos descubrir a priori las relaciones marginales de las variables con la variable objetivo binaria para hacernos una idea de cuales de ellas serán potencialmente influyentes en los modelos de regresión logística que ajustemos. 
+
+```{r Vcramer, warning=FALSE}
+#Obtengo la importancia de las variables. 
+#Falla si hay alguna variable cuantitativa con menos de 6 valores diferentes
+input$prop_missings <-as.factor(input$prop_missings)
+graficoVcramer(input,varObjBin)
+```
+
+
+Podemos decir que las variables tentativas para el modelado son:
+
+- Contrato 
+- Antiguedad
+- Int_serv
+- MetodoPago 
+
+Después de aleatorio2  empezamos a sospechar que las relaciones con la variable objetivo si pueden ser casualidad. 
+
+Veamos gráficamente la relacion entre las varaibles con la objetivo, por medio del mosaico. Tomemos una variable que ifluye y tomemos otra que no tanto a ver que nos resulta. 
+
+```{r mosaicos, warning=FALSE}
+#Veo gráficamente el efecto de dos variables cualitativas sobre la binaria
+m1<-mosaico_targetbinaria(input$Peliculas,varObjBin,"Peliculas") #esta no influye 
+m2<-mosaico_targetbinaria(input$Contrato,varObjBin,"Contrato") #esta sí influye
+
+```
+
+Para la variable peliculas, que no tiene mucha incidencia podemos ver que hay una mínima diferencia entre las regiones. Para la variable  Contrato, que consideramos tiene mucha incidencia con la variable objetivo, es más probable contrato con objetivo uno, cuando es mes a mes. Parece ser que, el contrato extendido por un año y hasta dos años, puede darnos indicio de fuga de clientes. 
+
+Veamos que efecto tienen dos variables cuantitativas sobre la objetivo binaria.
+
+```{r histogramas y boxplots, warning=FALSE, message=F}
+#Veo gráficamente el efecto de dos variables cuantitativas sobre la binaria
+bx1<-boxplot_targetbinaria(input$Antiguedad,varObjBin,"Antiguedad")
+bx2<-boxplot_targetbinaria(input$FacturaMes,varObjBin,"FacturaMes")
+bx4<-boxplot_targetbinaria(input$FacturaTotal,varObjBin,"FacturaTotal")
+
+
+h1<-hist_targetbinaria(input$Antiguedad,varObjBin,"Antiguedad")
+h2<-hist_targetbinaria(input$FacturaMes,varObjBin,"FacturaMes")
+h4<-hist_targetbinaria(input$FacturaTotal,varObjBin,"FacturaTotal")
+
+marrangeGrob(list(bx1,bx2,h1,h2),nrow = 2,ncol = 2)
+marrangeGrob(list(bx4,h4),nrow = 2,ncol = 2)
+```
+Los graficos Vcramer nos intenta decir que, para clientes cuyo tiempo de antiguedad es apenas de unos meses, tienen mas probabilidad de Fuga. Aquellos clientes que se fugan(fuga=1) no presentan facturas tan altas. Deben tener un posible sesgo. 
+
+
+## Tranformaciones de variables
+
+Vamos a generar las transformaciones de las variable continuas que maximizan la relación con la variable objetivo binaria en sentido de V de Cramer. 
+
+```{r transformaciones, warning=FALSE}
+#Busco las mejores transformaciones para las variables numéricas con respesto a la variable binaria
+input_bin<-cbind(input,Transf_Auto(Filter(is.numeric, input),varObjBin))
+
+# Guardamos el dataset con las tranformaciones
+todo_bin<-data.frame(input_bin,varObjBin)
+saveRDS(todo_bin,"todo_bin_Fuga_Clientes.RDS")
+```
+
+
+
+```{r Vcramer tranformaciones, warning=FALSE}
+#Obtengo la importancia de las variables. 
+graficoVcramer(input_bin,varObjBin)
+```
+Tiene buena pinta, pues no hubo muchos cambios. Hasta acá, quisimos dar una breve descripción a los datos para encontar incidencias con la variable objetivo. 
+
+##Modelo de regresión logistica para la predicción de la variable Fuga 
+
+```{r}
+#todo<-readRDS("todo_bin")
+todo<-todo_bin
+
+freq(todo$varObjBin) #ese ha de ser el error de referencia
+```
+
+
+Siguiendo las especificaciones del modelo, este tendrá mas dificultad en reconocer a los 1, es decir, los clientes en fuga. 
+
+### Partición training-test
+
+```{r}
+
+#Hago la partición
+set.seed(123456)
+trainIndex <- createDataPartition(todo$varObjBin, p=0.8, list=FALSE)
+data_train <- todo[trainIndex,c(1:23,30)]
+data_test <- todo[-trainIndex,c(1:23,30)]
+#data_test <- readRDS("C:/Users/Laura/Desktop/UCM/Documentacion2/Tarea/FugaClientes_test.RDS")
+```
+
+
+Quitemos los efectos no deseados o doblajes de las variables.
+
+```{r modelo manual lineal}
+# Este fue el modelo manual ganador 
+modeloManual<-glm(varObjBin~Contrato+Int_serv+Antiguedad,
+             data=data_train,family=binomial)
+summary(modeloManual)
+pseudoR2(modeloManual,data_train,"varObjBin")
+pseudoR2(modeloManual,data_test,"varObjBin")
+```
+
+
+# Esquema de selección de variables por Lasso
+
+
+```{r Lasso}
+## LASSO, lo hacemos sin interacciones pues, de lo contrario, puede coger interacciones y no las variables que las forman
+y <- as.double(as.matrix(data_train[, 24]))
+x<-model.matrix(varObjBin~., data=data_train)[,-1]#no cambiar el -1
+set.seed(1712)
+cv.lasso <- cv.glmnet(x,y,nfolds=5)
+plot(cv.lasso)
+```
+
+
+Este es el comportamiento de lambda y el intervalo de 1se. Mostramos lo coeficiente.
+
+```{r}
+(betas<-coef(cv.lasso, s=cv.lasso$lambda.1se))
+```
+Note que:
+
+- Hay una buena cantidad de variables que influyen en nuestro modelos, las de punto tienen una distripución sobre los parámetros que no vale la pena. Habia considerado que la fatura mensual influiría y al parecer no. Con seguridad, las variables 
+
+```{r}
+#pruebo un primer modelo sin las transformadas
+modeloInicial<-glm(varObjBin~.,data=data_train[,-c(1)],family=binomial)
+summary(modeloInicial)
+```
+
+
+
+Consultamos los valores de pseudoR2 en los conjuntos de training y test,
+
+```{r}
+pseudoR2(modeloInicial,data_train,"varObjBin")
+pseudoR2(modeloInicial,data_test,"varObjBin")
+modeloInicial$rank #número de parámetros
+
+impVariablesLog(modeloInicial,"varObjBin") 
+#si los datos de entrenamiento, no se llaman "data_train", hay que indicarlo
+
+```
+
+
+En el gráfico se ordenan las aportaciones al pseudoR2 de las distintas variables teniendo Contrato como la gran ganadora ya que aporta muchísimo más que cualquiera.
+
+Ahora, considremos un modelo con las 3 primeras variables, pues presentan incidencias sobre la variable objetivo. 
+
+```{r}
+#pruebo uno sencillo con 3 variables
+#glm() modelos lineales generalizados 
+modelo2<-glm(varObjBin~Contrato+Int_serv+Antiguedad,
+             data=data_train,family=binomial)
+summary(modelo2)
+pseudoR2(modelo2,data_train,"varObjBin")
+pseudoR2(modelo2,data_test,"varObjBin")
+modelo2$rank
+```
+Es un buen modelo, significativo en cuanto a sus parametros , indicando pseudoR2 en test es baja respecto a training lo que quiere decir que puede tener una mayor capacidad predictiva de generalización.
+
+Vamos viendo que pasa con 5 variables y sus interacciones,  
+
+
+```{r}
+#fijandome en la importancia de las variables, 
+#selecciono aquellas por encima de las aleatorias
+modelo3<-glm(varObjBin~Contrato+Int_serv+Antiguedad+Seguridad+Fact_sinPapel,
+             data=data_train,family=binomial)
+summary(modelo3)
+
+pseudoR2(modelo3,data_train,"varObjBin")#es un poquito peor que el anterior,
+#pero el n. de parametros es casi la mitad
+pseudoR2(modelo3,data_test,"varObjBin")
+modelo3$rank
+
+```
+
+El modelo en parámetros aumentó, pero sigue generalizando su capacidad predictiva pseudoR2 para test.  
+
+Veamos que pasa con variables continuas, como FacturaTotal, FacturaMes, 
+
+```{r}
+#fijandome en la importancia de las variables, 
+#selecciono aquellas por encima de las aleatorias
+modelo4<-glm(varObjBin~Contrato+Int_serv+Antiguedad+Seguridad+Fact_sinPapel+FacturaTotal+FacturaMes,
+             data=data_train,family=binomial)
+summary(modelo4)
+
+pseudoR2(modelo4,data_train,"varObjBin")#es un poquito peor que el anterior,
+#pero el n. de parametros es casi la mitad
+pseudoR2(modelo4,data_test,"varObjBin")
+modelo4$rank
+
+```
+
+Vemos que el modelo se mueve bastante en Training, ademas que tuvo ligero aumentos , junto con sus parámetros.La variable Factura Total no aporta tanto al modelo.
+
+Veamos que pasa con la interación sugerida por selección de variables clásica, 
+
+```{r}
+#pruebo uno con la interacción de alguna continua como pH y etiqueta
+modelo5<-glm(varObjBin~Contrato+Int_serv+Contrato*Antiguedad,
+             data=data_train,family=binomial)
+summary(modelo5)
+pseudoR2(modelo5,data_train,"varObjBin")#No parece muy buena idea
+pseudoR2(modelo5,data_test,"varObjBin")
+modelo3$rank
+```
+
+
+
+## Evaluación de los modelos por validación cruzada repetida
+
+```{r}
+#Validacion cruzada repetida para elegir entre todos
+
+#copia de la variable original
+auxVarObj<-todo$varObjBin
+
+#formateo la variable objetivo para que funcione el codigo
+todo$varObjBin<-make.names(todo$varObjBin) 
+
+total<-c()
+modelos<-sapply(list(modeloInicial,modelo2,modelo3,modelo4,modelo5),formula)
+for (i in 1:length(modelos)){
+  set.seed(1712)
+  vcr<-train(as.formula(modelos[[i]]), data = todo,
+             method = "glm", family="binomial",metric = "ROC",
+             trControl = trainControl(method="repeatedcv", number=5, repeats=20,
+                                      summaryFunction=twoClassSummary,
+                                      classProbs=TRUE,returnResamp="all")
+  )
+  total<-rbind(total,data.frame(roc=vcr$resample[,1],modelo=rep(paste("Modelo",i),
+                                                                  nrow(vcr$resample))))
+}
+boxplot(roc~modelo,data=total,main="Área bajo la curva ROC") 
+```
+
+Podemos decir que todos los modelos son buenos, tiene un ROC en torno a 0.83 y pues la diferencia entre ellos son muy sutiles. 
+
+Veamos los valores medios y la desviación respecto a la media de todos los modelos y veamos su comportamiento. 
+
+```{r}
+aggregate(roc~modelo, data = total, mean) 
+aggregate(roc~modelo, data = total, sd) 
+```
+
+```{r}
+#recupero la variable objetivo en su formato
+todo$varObjBin<-auxVarObj
+
+#miro el numero de parametros
+modeloInicial$rank
+modelo2$rank 
+modelo3$rank
+modelo4$rank
+modelo5$rank
+```
+Podemos decir que, entre ellos las diferencias son muy ligeras y que cualquier modelo podria ayudarnos,para mi, el que mejor incidencia tiene es el modelo 3  o el modelo 5 que tiene el top de las variables que más repercuten. 
+
+
+## Punto de corte óptimo para la probabilidad estimada
+
+```{r}
+## BUscamos el mejor punto de corte
+
+#gráfico de las probabilidades obtenidas
+hist_targetbinaria(predict(modelo3, newdata=data_test,type="response"),data_test$varObjBin,"probabilidad")
+```
+- Azul: Distribución de probabilidades estimadas para los 1. Está mucho más repartida
+- Rojo : Distribución de probabilidades estimadas para los 0. Su densidad apunta para valores muy bajos 
+
+Note que, el modelo como lo habiamos planteado, tiene dificultades pra reconocer a los 1. 
+
+El punto de corte donde la mayor densidad se concentra en la distribición de probabilidades estimadas para cero se aproxima a 0.3.
+
+```{r}
+#probamos dos
+sensEspCorte(modelo3,data_test,"varObjBin",0.3,"1")
+sensEspCorte(modelo3,data_test,"varObjBin",0.57,"1")
+
+```
+
+Con el punto de corte en 0.3 el accuracy es de 75% estará bien clasficada. En un 76% el modelo tiene la capacidad de reconocer a los 1 y en un 74% tiene la capacidad de reconocer a los cero. Muy parejo. ¿Que significa?(Pendiente)
+
+Coloquemos ahora, una rejilla de puntos de corte posibles entre 0 y 1 y valoremos cual criterio maximiza el accurazy. 
+
+
+```{r}
+## generamos una rejilla de puntos de corte
+posiblesCortes<-seq(0,1,0.01)
+rejilla<-data.frame(t(rbind(posiblesCortes,sapply(posiblesCortes,function(x) 
+sensEspCorte(modelo3,data_test,"varObjBin",x,"1")))))
+
+rejilla$Youden<-rejilla$Sensitivity+rejilla$Specificity-1
+
+plot(rejilla$posiblesCortes,rejilla$Youden)
+plot(rejilla$posiblesCortes,rejilla$Accuracy)
+rejilla$posiblesCortes[which.max(rejilla$Youden)]
+rejilla$posiblesCortes[which.max(rejilla$Accuracy)]
+```
+
+
+Veamos ahora los coeficientes del modelo ganador.
+
+```{r}
+# Vemos los coeficientes del modelo ganador
+coef(modelo3)
+```
+
+Veamos la matriz de confusión en el conjunto de test,enfrentamos lo que hemos dicho con la verdad verdadera. 
+
+```{r}
+# Generar el factos con las clases estimadas en test
+pred_test<-factor(ifelse(predict(modelo3,data_test,type = "response")>0.3,1,0))
+
+# Tablas marginales
+table(pred_test)
+table(data_test$varObjBin)
+
+# Matriz de confusión
+confusionMatrix(pred_test,data_test$varObjBin, positive = '1')
+```
+Observe que:
+
+- El modelo reconoce a 249 de 337  (1) y a 711  de 933 (0).
+- La diagonal principal de la matriz de confusion nos da una pista de un buen modelo. 
+
+## Interpretación de parámetros del modelo logístico
+
+```{r}
+# Ajustamos el modelo a datos completos 
+modeloC<-glm(formula(modelo3),data=todo,family=binomial)
+summary(modeloC)
+```
+Para calcular el OR, es decir la probabilidad de evento sobre la probabilidad de no evento, tomemos la siguiente función y aplicando la exponencial por ser la inversa, tenemso que, 
+
+
+```{r}
+# Odds ratios
+epiDisplay::logistic.display(modeloC)
+```
+
+Conclusiones del modelo, 
+
+-La probabilidad de Fuga respecto a la no Fuga se reduce en un 74% en un Cliente con Contrato por dos años con respecto a la de un cliente con contraro mes a mes.
+
+- Cada aumento unitario de la **Antiguedad** produce una reducción de probabilidad de Fuga del 3%.
+
+- La probabilidad de no fuga de un Cliente con Internet Fibra óptica es 2.88 veces superior a la de un Cliente con internet DSL. 
+
+
+##Aplicación de modelo a FugaClientes_test
+
+```{r}
+data_test<-readRDS("C:/Users/Laura/Dropbox/UCM/Mineria_y_modelizacion_1/Tarea/FugaClientes_test.RDS")
+
+```
+
+
+```{r}
+# Generar el factos con las clases estimadas en test
+pred_test<-factor(ifelse(predict(modelo3,data_test,type = "response")>0.3,1,0))
+
+# Tablas marginales
+table(pred_test)
+table(data_test$varObjBin)
+
+saveRDS(cbind(data_test[1],pred_test),"FugaPredict_LauraPineros.RDS")
+
+```
+
+
+
+
+
+
