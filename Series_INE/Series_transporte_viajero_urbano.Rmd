@@ -1,0 +1,243 @@
+---
+title: "Serie transporte viajero Urbano en España"
+author: "Laura Piñeros"
+date: "7/3/2022"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE}
+suppressPackageStartupMessages({
+library(readxl)
+library(ggplot2)
+library(ggfortify)
+library(zoo)
+library(gridExtra)
+library(seasonal)
+library(gridExtra)
+library(urca)
+library(fpp2)
+library(forecast)
+})
+```
+
+**Ejercicio 1 (1)** Introducción: Presentación de la serie a analizar. 
+
+La serie la tomamos del INE(Institut Nacional de Estadísticas), relacionada con Estadistica de transporte viajero urbano en España desde Abril de 2009, con datos mensuales. 
+
+Importamos el dataset,
+
+```{r}
+getwd()
+TURBANO<-read_excel("C:/Users/Laura/Dropbox/UCM/Mineria_y_modelizacion_2/Evaluacion/TUrbano.xlsx")
+turbano <- ts(TURBANO[,-1], start=c(2009,4), frequency=12)
+autoplot(turbano)+ ggtitle("Numero de viajeros mensuales") + xlab("mes")+ ylab("Numero de viajeros")
+```
+
+Notemos que 
+
+- La serie no es estacionaria pues no fluctua al rededor de un nivel constante.
+- Tiene tendencia a decrecer hacia el 2021
+- Tiene un comportamiento estacional y su periodo es 12
+
+**Ejercicio 2. (1.5)** Representación gráfica y descomposición estacional (si tuviera comportamiento estacional).
+
+Veamos los componentes de la descomposición estacional,
+
+```{r}
+viajerosu<- decompose(turbano,type=c("multiplicative"))
+knitr::kable(viajerosu$figure,digits =2,caption = "Coeficientes de Estacionalidad")
+```
+
+Notemos que
+
+- En el mes de marzo se encuentra el coeficiente mayor, lo que indica que en este mes hay un 60% más de viajeros por transporte urbano, que la media del año. 
+- En el mes de junio se encuentra el coeficiente menos, lo que indica que en este mes hay un 78% de viajeros por debajo de la media del año. 
+
+Veamos la estimación de la tendencia(T_t) , la componente estacional(S_T) y el error(Z_t), 
+
+```{r}
+autoplot(viajerosu,ts.colour = "black")
+```
+
+Podriamos decir que un poco antes de 2020 la curva comienza a decrecer lo que indica una baja en viajes por transporte urbano, además que fluctúa bastante el componente estacional. 
+
+Ahora representemos la serie con la tendencia y la serie ajustada estacionalmente 
+
+
+```{r}
+autoplot(turbano, series="Datos") + 
+autolayer(trendcycle(viajerosu), series="Tendencia")+
+autolayer(seasadj(viajerosu), series="Estacionalmente ajustada")+
+xlab("Year") + ylab("VTU") +
+ggtitle("Serie de VTU") +
+scale_colour_manual(values=c("gray","blue","red"), breaks=c("Datos","Estacionalmente ajustada","Tendencia"))
+```
+
+Ahora realicemos el análisis de la serie de cada año. 
+
+```{r}
+ggseasonplot(turbano, year.labels=TRUE, year.labels.left=TRUE) +
+ylab("Numero") +
+ggtitle("Seasonal plot: VPTU")
+```
+
+**Ejercicio 3. ** Para comprobar la eficacia de los métodos de predicción que vamos a hacer en los siguientes apartados reservamos los últimos datos observados (un periodo en las series estacionales o aproximadamente 10 observaciones) para comparar con las predicciones realizadas por cada uno de los métodos. Luego ajustamos los modelos sobre la serie sin esos últimos datos en los siguientes apartados.
+
+Reservaremos los datos de entrenamiento aproximadamente hasta Febrero del 2020, para comparar las predicciones.  
+
+```{r}
+vtu_train<- window(turbano, end=c(2020,2))
+```
+
+**Ejercicio 4. (2)** Encontrar el modelo de suavizado exponencial más adecuado. Para dicho modelo, representar gráficamente la serie observada y la suavizada con las predicciones para
+un periodo que se considere adecuado. 
+
+```{r}
+vtu_sh <- hw(vtu_train,seasonal="multiplicative", h=12,level = c(80, 95))
+autoplot(vtu_sh)
+print(vtu_sh)
+```
+Mostramos las predicciones anteriores con un intervalo de confianza del 80% al 95%.
+
+Los parámetros del modelo ajustados son:
+
+
+```{r}
+knitr::kable(vtu_sh$model$par, format = 'pipe',digits=3, caption='Estimadores de los parámetros')
+```
+
+
+**Ejercicio 5. (3)** Representar la serie y los correlogramas. Decidir que modelo puede ser ajustado. Ajustar el modelo adecuado comprobando que sus residuales están incorrelados. (Sintaxis, tablas de los parámetros estimados y gráficos)
+
+Calculamos las autocorrelaciones simples hasta el retardo 48 
+
+```{r}
+ggAcf(vtu_train, lag=48)
+```
+
+Coeficiente de correlación parcial, 
+
+```{r}
+#Calculamos las autocorrelaciones parciales hasta el retardo 48
+ggPacf(vtu_train, lag=48)
+```
+Notemos que el comportamiento es normal por ser una serie no estacionaria pero si estacional, además, la dependencia entre el instate x_t y x_t-12 es muy fuerte. 
+
+Realicemos las diferenciaciones de orden adecuado y veamos nuevamente las autocorrelaciones
+
+```{r}
+autoplot(diff(vtu_train))+ ggtitle("Porcentaje de vijeros en TU") +xlab("mes") + ylab("porcentaje")
+```
+
+```{r}
+ggAcf(diff(vtu_train), lag=48)
+ggPacf(diff(vtu_train), lag=48)
+```
+```{r}
+ggAcf(diff(diff(vtu_train),12), lag=48)
+ggPacf(diff(diff(vtu_train),12), lag=48)
+```
+
+
+```{r}
+fitvtu1 <- Arima((vtu_train),c(1,1,0),seasonal=c(0,1,1))
+checkresiduals(fitvtu1 )
+```
+
+Puesto que el p-value < 0.05, el modelo no explica la dependencia de la serie. 
+
+
+Probemos con autorima , para encontrar los paŕametros y ver cual nos recomienda
+
+```{r}
+fitvtu2 <- auto.arima(vtu_train)
+checkresiduals(fitvtu2)
+```
+
+El p-value > 0.05 lo que indica que en un nivel del 0.8  aceptamos que los residuos están incorrelacionados. 
+
+
+```{r}
+fitvtu3 <- auto.arima(log(vtu_train))
+checkresiduals(fitvtu3)
+```
+
+
+**Ejercicio 6. (1)** Escribir la expresión algebraica del modelo ajustado con los parámetros estimados. 
+
+```{r}
+print(fitvtu2)
+```
+
+$$ (1 + 0.94 B^{12} )(1 − B^{12} )(1 − B ) X_{t} = (1 − 0.7015 B^{12}) Z_{t} $$
+$$(1 + 0.94 B^{12} )(1 − B^{12} )(X_{t} − X_{t − 1} ) = − 0.7015 Z_{t − 12} + Z_{t}$$
+$$(1 + 0.94 B^{12} )(X_{t} − X_{t − 12} − X_{t − 1} + X_{t − 13} ) = −0.7015 Z _{t − 12} + Z_{t}$$
+$$X_{t} − X_{t − 12} − X_{t − 1} + X_{t − 13} + 0.94X_{t − 12} − 0.94 X_{t − 24} − 0.94X_{t − 13} + 0.94X_{t − 25} = − 0.7015 Z_{t − 12} + Z_{t}$$
+$$X_{t}− 0.06 X_{t − 12} − X _{t − 1} + 0.06 X_{t − 13} − 0.94 X_{t − 24} + 0.94 X_{t − 25} = − 0.7015 Z_{t − 12} + Z_{t}$$
+$$X_{t} =X_{t − 1} +0.06 X_{t − 12} − 0.06 X_{t − 13} + 0.94X_{t − 24} − 0.94X_{t − 25} − 0.7015 Z_{t − 12} + Z_{t}$$
+
+Tomamos exponenciales para volver a los valores iniciales
+
+$$X_{t} =X _{t − 1}  X_{t-12}^{0.06} X_{t-13}^{-0.06} X_{t-24}^{0.94} X_{t-25}^{-0.94} Z_{t-12}^{-0.70}+Z_{t}$$
+
+
+**Ejercicio 7. (1)**Calcular las predicciones y los intervalos de confianza para las unidades de tiempo que se considere oportuno, dependiendo de la serie, siguientes al último valor observado. Representarlas gráficamente.
+
+
+```{r}
+autoplot(forecast(fitvtu2,h=12))
+```
+El gráfico anterior basado solo en las exponenciales, pues ya presentaba un p-value>0.05.
+
+```{r}
+predi2<-forecast(fitvtu2,h=12)
+cbind("predicion" =exp(predi2$mean),
+"L80" = exp(predi2$lower),
+"U80" = exp(predi2$upper)) %>%knitr::kable(,caption = "Predicciones ")
+```
+
+**Ejercicio 8 (0.5)** Comparar las predicciones obtenidas con cada uno de los métodos con los valores observados que habíamos reservado antes. Conclusiones.
+
+```{r}
+autoplot(turbano) +
+autolayer(forecast(fitvtu1,h=12), series="manual", PI=FALSE) +
+autolayer(forecast(fitvtu2,h=12), series="automatico", PI=FALSE)+
+autolayer(forecast(fitvtu3,h=12), series="logaritmico", PI=FALSE)
+```
+
+- Aunque tomé las ecuaciones con el modelo exponencial 2, con diferencias. El gráfico nos muestra  que el modelo automático y manual del número viajeros en transporte urbano tiende a mantener el mismo patron que los años anteriores, aunque incrementa. Sin embargo si vemos el modelo algoritmico nos brinda información acerca de lo que suponiamos y era que por la emergencia sanitaria, este porcentaje bajaría. En ese orden,ñ el modelo logaritmico nos ofreció una mejor calidad en la capacidad de presicion de la predicción, para después de febrero de 2020.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
